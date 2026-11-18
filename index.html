@@ -1683,10 +1683,6 @@
   <!-- Видео трейлера с поддержкой iOS Safari и Android Chrome -->
   <video id="real-trailer-video" playsinline webkit-playsinline x5-playsinline preload="auto" loop style="position:fixed;bottom:12px;right:12px;width:96px;height:54px;opacity:0.08;pointer-events:none;z-index:2;border-radius:4px;overflow:hidden;" src="assets/trailers/avengers_endgame.mp4"></video>
 
-  <!-- Скрытый canvas для анимации трейлера -->
-  <canvas id="trailer-canvas" width="1280" height="720"
-          style="position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;"></canvas>
-
   <!-- Нижняя панель UI 3D-зала -->
   <div class="toast-notify" id="toast-notify"></div>
   <div class="viewer-ui-3d">
@@ -1815,12 +1811,12 @@
       var posterImgSrc = m.poster_vertical || 'assets/posters/avengers_endgame.jpg';
 
       card.innerHTML = 
-        '<div class="movie-poster">' +
+        '<div class="movie-poster" style="cursor:pointer;" onclick="openFirstSession(' + m.id + ')">' +
         '  <img src="' + posterImgSrc + '" alt="' + m.name + '" loading="eager" decoding="async" onerror="this.onerror=null;this.src=\'assets/posters/avengers_endgame.jpg\';" />' +
         '</div>' +
         '<div class="movie-info">' +
         '  <div class="movie-header">' +
-        '    <div class="movie-title">' + m.name + '</div>' +
+        '    <div class="movie-title" style="cursor:pointer;" onclick="openFirstSession(' + m.id + ')">' + m.name + '</div>' +
         '    <span class="movie-badge-age">' + (m.age || '16+') + '</span>' +
         '  </div>' +
         '  <div class="movie-meta">' + metaHtml + '</div>' +
@@ -1901,6 +1897,21 @@
     document.getElementById('seat-modal').classList.remove('active');
   }
   window.closeSeatModal = closeSeatModal;
+
+  function openFirstSession(movieId) {
+    if (typeof CINEMATICA_DATA === 'undefined' || !CINEMATICA_DATA.movies) return;
+    var m = CINEMATICA_DATA.movies.find(function(item) { return item.id === movieId; });
+    if (!m) return;
+    var dateId = (typeof selectedDateId !== 'undefined' && selectedDateId) ? selectedDateId : '16.11.26';
+    var sessions = (m.sessions_by_date && m.sessions_by_date[dateId]) || [];
+    if (sessions.length === 0) {
+      var dates = Object.keys(m.sessions_by_date || {});
+      if (dates.length > 0) sessions = m.sessions_by_date[dates[0]] || [];
+    }
+    var s = sessions[0] || { cinema: 'Cosmopark', hall: 'Зал 1 — IMAX Laser', time: '18:45', price: 550 };
+    openSeatModal(m.name, s.cinema + ' • ' + s.hall, s.time, s.price, m.id);
+  }
+  window.openFirstSession = openFirstSession;
 
   function renderSeatMap() {
     var container = document.getElementById('seats-grid-container');
@@ -2033,9 +2044,9 @@
   var CAMERA_TARGET = new THREE.Vector3(0, screenCY - 0.45, 0.06);
 
   var PEOPLE = {
-    man:   { seatedH: 0.906, headR: 0.105, bodyW: 0.30, color: 0x333b4e },
-    woman: { seatedH: 0.837, headR: 0.095, bodyW: 0.26, color: 0x4a3642 },
-    child: { seatedH: 0.716, headR: 0.085, bodyW: 0.22, color: 0x2e3d3b }
+    man:   { torsoW: 0.32, torsoD: 0.14, torsoH: 0.44, headR: 0.085, legW: 0.28, legD: 0.20, color: 0x2e3444 },
+    woman: { torsoW: 0.28, torsoD: 0.13, torsoH: 0.40, headR: 0.080, legW: 0.24, legD: 0.19, color: 0x422f3b },
+    child: { torsoW: 0.22, torsoD: 0.11, torsoH: 0.32, headR: 0.070, legW: 0.19, legD: 0.16, color: 0x28362f }
   };
   var OCCUPANCY = 0.70;
 
@@ -2074,7 +2085,7 @@
 
   var renderer, scene, camera, screenMesh, screenMat, posterTexture, realVideoTexture, textureLoader;
   var screenFrameMesh, screenRim;
-  var realVideoEl, tCanvas, tCtx, trailerTexture, trailerFrame = 0, trailerActive = false;
+  var realVideoEl;
   var seatList = [];
   var peopleGroup;
   var currentCamPos = new THREE.Vector3();
@@ -2266,12 +2277,6 @@
         screenMat.needsUpdate = true;
       }
     });
-
-    // Канвас-трейлер фоллбэк
-    tCanvas = document.getElementById('trailer-canvas');
-    tCtx = tCanvas.getContext('2d');
-    trailerTexture = new THREE.CanvasTexture(tCanvas);
-    trailerTexture.minFilter = THREE.LinearFilter;
 
     // Кресла
     var frameMat = new THREE.MeshStandardMaterial({ color: 0x181820, metalness: 0.35, roughness: 0.65 });
@@ -2534,26 +2539,48 @@
         var person = new THREE.Group();
         person.position.set(pos.x, pos.y, pos.z);
 
-        var seatTop = 0.43;
-        var torsoH = type.seatedH * 0.72;
-        var bodyMat = new THREE.MeshStandardMaterial({ color: type.color, roughness: 0.8 });
-        var body = new THREE.Mesh(new THREE.CylinderGeometry(type.bodyW * 0.44, type.bodyW * 0.38, torsoH, 10), bodyMat);
-        body.position.set(0, seatTop + torsoH / 2, 0.08);
-        person.add(body);
-
+        var seatTop = 0.44; // Верхняя плоскость подушки сиденья
+        var bodyMat = new THREE.MeshStandardMaterial({ color: type.color, roughness: 0.82 });
         var headMat = new THREE.MeshStandardMaterial({ color: 0xb48f76, roughness: 0.75 });
-        var headY = seatTop + torsoH + type.headR * 0.95;
+
+        // 1. Бедра/ноги на сиденье — строго внутри границ подушки (не выпирают вперед или по бокам)
+        var legs = new THREE.Mesh(new THREE.BoxGeometry(type.legW, 0.08, type.legD), bodyMat);
+        legs.position.set(0, seatTop + 0.04, -0.07);
+        person.add(legs);
+
+        // 2. Торс человека — компактный, прилегающий к спинке, НЕ выпирающий сзади через спинку
+        var torsoCenterY = seatTop + type.torsoH / 2;
+        var torso = new THREE.Mesh(new THREE.BoxGeometry(type.torsoW, type.torsoH, type.torsoD), bodyMat);
+        torso.position.set(0, torsoCenterY, 0.015);
+        torso.rotation.x = -0.06; // Легкий естественный наклон к спинке
+        person.add(torso);
+
+        // 3. Руки по бокам торса (аккуратно внутри подлокотников)
+        var armW = 0.045, armH = type.torsoH * 0.72, armD = type.torsoD * 0.85;
+        var armL = new THREE.Mesh(new THREE.BoxGeometry(armW, armH, armD), bodyMat);
+        armL.position.set(-type.torsoW / 2 - armW / 2 + 0.005, torsoCenterY - 0.02, 0.01);
+        person.add(armL);
+
+        var armR = new THREE.Mesh(new THREE.BoxGeometry(armW, armH, armD), bodyMat);
+        armR.position.set(type.torsoW / 2 + armW / 2 - 0.005, torsoCenterY - 0.02, 0.01);
+        person.add(armR);
+
+        // 4. Шея и голова — над торсом, перед подголовником
+        var neckH = 0.04;
+        var headY = seatTop + type.torsoH + neckH + type.headR * 0.85;
+        var headZ = 0.035;
         var head = new THREE.Mesh(new THREE.SphereGeometry(type.headR, 12, 10), headMat);
-        head.position.set(0, headY, 0.06);
+        head.position.set(0, headY, headZ);
         person.add(head);
 
+        // 5. Прическа
         var hairColors = [0x1a1a1a, 0x2e241c, 0x3d3126, 0x111111];
         var hairClr = hairColors[Math.floor(seededRandom() * hairColors.length)];
         var hair = new THREE.Mesh(
-          new THREE.SphereGeometry(type.headR * 1.04, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55),
+          new THREE.SphereGeometry(type.headR * 1.03, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55),
           new THREE.MeshStandardMaterial({ color: hairClr, roughness: 0.85 })
         );
-        hair.position.set(0, headY + type.headR * 0.08, 0.06);
+        hair.position.set(0, headY + type.headR * 0.08, headZ);
         person.add(hair);
 
         peopleGroup.add(person);
@@ -2733,90 +2760,31 @@
                 screenMat.needsUpdate = true;
               }
               showToast('🔇 Нажмите на иконку звука для включения');
-            }).catch(startCanvasTrailer);
+            }).catch(function(playErr) {
+              console.warn('Video playback error:', playErr);
+              showToast('⚠️ Ошибка воспроизведения трейлера');
+              isPlaying = false;
+              if (screenMat && posterTexture) {
+                screenMat.map = posterTexture;
+                screenMat.needsUpdate = true;
+              }
+              update3DUI();
+              updateSoundUI();
+            });
           });
         } else {
           adjustScreenToVideo();
         }
-      } else {
-        startCanvasTrailer();
       }
     } else {
       if (realVideoEl && !realVideoEl.paused) realVideoEl.pause();
-      trailerActive = false;
-      if (screenMat) {
+      if (screenMat && posterTexture) {
         screenMat.map = posterTexture;
         screenMat.needsUpdate = true;
       }
     }
     update3DUI();
     updateSoundUI();
-  }
-
-  function startCanvasTrailer() {
-    trailerFrame = 0;
-    trailerActive = true;
-    screenMat.map = trailerTexture;
-    screenMat.needsUpdate = true;
-  }
-
-  function drawTrailerFrame() {
-    var w = tCanvas.width, h = tCanvas.height;
-    trailerFrame++;
-    var phase = trailerFrame * 0.03;
-    var r = Math.floor(35 + 50 * Math.abs(Math.sin(phase * 0.7)));
-    var g = Math.floor(15 + 20 * Math.abs(Math.sin(phase * 0.5)));
-    var b = Math.floor(55 + 75 * Math.abs(Math.sin(phase * 0.3)));
-    tCtx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
-    tCtx.fillRect(0, 0, w, h);
-
-    tCtx.fillStyle = 'rgba(255,255,255,0.9)';
-    for (var p = 0; p < 50; p++) {
-      var px = (p * 197.3 + trailerFrame * (p % 3 + 1)) % w;
-      var py = (p * 123.1 + trailerFrame * 0.7) % h;
-      tCtx.beginPath();
-      tCtx.arc(px, py, 2 + (p % 3), 0, Math.PI * 2);
-      tCtx.fill();
-    }
-
-    var grad = tCtx.createRadialGradient(w/2, h/2, 0, w/2, h/2, w*0.55);
-    grad.addColorStop(0, 'rgba(225,29,72,' + (0.55 + 0.25 * Math.sin(phase)) + ')');
-    grad.addColorStop(1, 'rgba(0,0,0,0)');
-    tCtx.fillStyle = grad;
-    tCtx.fillRect(0, 0, w, h);
-
-    var aSize = 145 + 12 * Math.sin(phase * 2);
-    tCtx.save();
-    tCtx.translate(w / 2, h * 0.36);
-    tCtx.font = 'bold ' + Math.floor(aSize) + 'px "Inter", "Helvetica Neue", sans-serif';
-    tCtx.textAlign = 'center';
-    tCtx.fillStyle = '#ffffff';
-    tCtx.shadowColor = '#e11d48';
-    tCtx.shadowBlur = 40 + 15 * Math.sin(phase * 3);
-    tCtx.fillText('A', 0, aSize * 0.35);
-    tCtx.restore();
-
-    tCtx.save();
-    tCtx.font = '900 52px "Inter", "Helvetica Neue", sans-serif';
-    tCtx.textAlign = 'center';
-    tCtx.fillStyle = '#ffffff';
-    tCtx.shadowColor = '#e11d48';
-    tCtx.shadowBlur = 24;
-    tCtx.fillText('AVENGERS', w / 2, h * 0.66);
-
-    tCtx.font = '900 40px "Inter", "Helvetica Neue", sans-serif';
-    tCtx.fillStyle = '#60a5fa';
-    tCtx.shadowColor = '#000';
-    tCtx.shadowBlur = 12;
-    tCtx.fillText('ENDGAME', w / 2, h * 0.78);
-
-    tCtx.font = '700 20px "Inter", "Helvetica Neue", sans-serif';
-    tCtx.fillStyle = '#f59e0b';
-    tCtx.shadowBlur = 0;
-    tCtx.fillText('COSMOPARK • ЗАЛ 1 (IMAX LASER)', w / 2, h * 0.89);
-    tCtx.restore();
-
-    trailerTexture.needsUpdate = true;
   }
 
   function togglePeople() {
@@ -2847,7 +2815,6 @@
     var lookTarget = new THREE.Vector3().addVectors(currentCamPos, lookDir);
     camera.lookAt(lookTarget);
 
-    if (trailerActive) drawTrailerFrame();
     renderer.render(scene, camera);
   }
 
@@ -2858,6 +2825,10 @@
     if (selectedSeats.length === 0) return;
 
     unlockAudioPipeline();
+    if (isPlaying) {
+      isPlaying = false;
+      if (realVideoEl && !realVideoEl.paused) realVideoEl.pause();
+    }
     TICKETS = selectedSeats.slice();
     ticketIdx = 0;
 
